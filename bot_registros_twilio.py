@@ -36,7 +36,7 @@ PREFIX_TO_TAB = {
     "CR": "CODIGOS_R",
 }
 
-ARCHIVO_GS = "REGISTROS_DIARIOS"
+ARCHIVO_GS ="REGISTROS_DIARIOS "
 
 
 # ==========================================
