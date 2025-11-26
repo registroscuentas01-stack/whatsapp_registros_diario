@@ -12,20 +12,17 @@ import requests
 app = Flask(__name__)
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN DE NÚMEROS
+# ⚙️ CONFIGURACIÓN DE USUARIOS Y PESTAÑAS
 # ==========================================
 
-ADMINS = ["+593990516017", "+351927903369"]
-NUMEROS_BYRON = ["+351961545289", "+351961545268"]
+USUARIOS = {
+    "+593991769796": ["INGRESOS_F", "GASTOS_F", "CREDITOS_F"],
+    "+593989921225": ["INGRESOS_F", "CREDITOS_F", "INGRESOS_D", "CREDITOS_D"],
+    "+447594501771": ["CODIGOS_RETIRO", "INGRESOS_D", "GASTOS_D", "CREDITOS_D"],
+    "+593989777246": ["INGRESOS_F", "GASTOS_F", "CREDITOS_F"],
+}
 
-# Memoria temporal del modo admin
-modo_admin = {}  # { "+59399...": "P" }
-
-# Pestañas dentro del archivo
-TAB_PERSONAL = "PERSONAL"
-TAB_ALEX = "ALEX"
-TAB_BYRON = "BYRON"
-ARCHIVO_GS = "GASTOS_AUTOMÁTICOS"
+ARCHIVO_GS = "REGISTROS_DIARIOS"
 
 # ==========================================
 # 🔹 GOOGLE SHEETS
@@ -50,13 +47,16 @@ credentials_dict = {
 }
 
 credentials = service_account.Credentials.from_service_account_info(credentials_dict, scopes=scope)
+
 client = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
 archivo = client.open(ARCHIVO_GS)
-sheet_personal = archivo.worksheet(TAB_PERSONAL)
-sheet_alex = archivo.worksheet(TAB_ALEX)
-sheet_byron = archivo.worksheet(TAB_BYRON)
+
+# Pre-cargar todas las pestañas
+hojas = {}
+for ws in archivo.worksheets():
+    hojas[ws.title] = ws
 
 # ==========================================
 # 🔹 CATEGORIZACIÓN
@@ -64,7 +64,6 @@ sheet_byron = archivo.worksheet(TAB_BYRON)
 
 def extraer_monto_y_moneda(texto):
     t = texto.lower()
-
     patrones = [
         (re.compile(r'(?:€)\s*([0-9]+(?:[.,][0-9]{1,2})?)'), "€"),
         (re.compile(r'(?:\$)\s*([0-9]+(?:[.,][0-9]{1,2})?)'), "$"),
@@ -72,20 +71,17 @@ def extraer_monto_y_moneda(texto):
         (re.compile(r'([0-9]+(?:[.,][0-9]{1,2})?)\s*\$'), "$"),
     ]
 
-    # 1️⃣ Intentar detectar con símbolo € o $
     for rex, moneda in patrones:
         m = rex.search(t)
         if m:
             return m.group(1).replace(",", "."), moneda
 
-    # 2️⃣ Si no tiene símbolo → detectar número aislado y devolver €
     m = re.search(r'\b([0-9]+(?:[.,][0-9]{1,2})?)\b', t)
-
     if m:
-        numero = m.group(1).replace(",", ".")
-        return numero, "€"  # ✔ por defecto €
+        return m.group(1).replace(",", "."), "€"
 
     return None, None
+
 
 def clasificar_categoria(texto):
     texto = texto.lower()
@@ -136,46 +132,33 @@ def webhook():
     msg = request.form.get("Body", "").strip()
     sender = request.form.get("From", "").replace("whatsapp:", "")
     num_media = int(request.form.get("NumMedia", 0))
+
     resp = MessagingResponse()
     r = resp.message()
 
     # ------------------------------------------
-    # 🔥 1️⃣ ADMIN CAMBIA MODO CON P / S
+    # Validar usuario
     # ------------------------------------------
-    if sender in ADMINS and msg.upper() in ["P", "S"]:
-        modo_admin[sender] = msg.upper()
-        destino = "PERSONAL" if msg.upper() == "P" else "ALEX"
-        r.body(f"✔ Modo cambiado a: *{destino}*")
+    if sender not in USUARIOS:
+        r.body("❌ Usuario no autorizado.")
         return str(resp)
 
-    # ------------------------------------------
-    # 🔥 2️⃣ DETERMINAR HOJA DESTINO
-    # ------------------------------------------
-    if sender in NUMEROS_BYRON:
-        hoja = sheet_byron
-
-    elif sender in ADMINS:
-        modo = modo_admin.get(sender, "P")
-        hoja = sheet_personal if modo == "P" else sheet_alex
-
-    else:
-        hoja = sheet_byron  # por seguridad
-
-    # ------------------------------------------
-    # 3️⃣ REGISTRO NORMAL
-    # ------------------------------------------
+    # Extraer datos
     monto, moneda = extraer_monto_y_moneda(msg)
     categoria = clasificar_categoria(msg)
     descripcion = limpiar_descripcion(msg)
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    link = ""
 
+    link = ""
     if num_media > 0:
         link = subir_foto_drive(request.form.get("MediaUrl0"))
 
-    hoja.append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
+    # Registrar en TODAS las pestañas asignadas a ese número
+    for tab in USUARIOS[sender]:
+        if tab in hojas:
+            hojas[tab].append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
 
-    r.body(f"✅ Gasto registrado\n📅 {fecha}\n🏷️ {categoria}\n💬 {descripcion}\n💰 {monto}{moneda}")
+    r.body(f"✅ Registrado en pestañas: {', '.join(USUARIOS[sender])}\n💰 {monto}{moneda}\n🏷️ {categoria}\n💬 {descripcion}")
     return str(resp)
 
 # ==========================================
