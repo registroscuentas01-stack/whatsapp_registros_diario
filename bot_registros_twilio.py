@@ -12,14 +12,28 @@ import requests
 app = Flask(__name__)
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN DE USUARIOS Y PESTAÑAS
+# ⚙️ CONFIGURACIÓN DE ADMINS
 # ==========================================
 
-USUARIOS = {
-    "+593991769796": ["INGRESOS_F", "GASTOS_F", "CREDITOS_F"],
-    "+593989921225": ["INGRESOS_F", "CREDITOS_F", "INGRESOS_D", "CREDITOS_D"],
-    "+447594501771": ["CODIGOS_RETIRO", "INGRESOS_D", "GASTOS_D", "CREDITOS_D"],
-    "+593989777246": ["INGRESOS_F", "GASTOS_F", "CREDITOS_F"],
+ADMINS = [
+    "+593991769796",
+    "+593989921225",
+    "+447594501771",
+    "+593989777246"
+]
+
+# ==========================================
+# ⚙️ MAPA DE PREFIJOS -> PESTAÑAS DE GOOGLE SHEETS
+# ==========================================
+
+PREFIX_TO_TAB = {
+    "IF": "INGRESOS_F",
+    "GF": "GASTOS_F",
+    "CF": "CREDITOS_F",
+    "ID": "INGRESOS_D",
+    "GD": "GASTOS_D",
+    "CD": "CREDITOS_D",
+    "CR": "CODIGOS_R",
 }
 
 ARCHIVO_GS = "REGISTROS_DIARIOS"
@@ -47,19 +61,18 @@ credentials_dict = {
 }
 
 credentials = service_account.Credentials.from_service_account_info(credentials_dict, scopes=scope)
-
 client = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
 archivo = client.open(ARCHIVO_GS)
 
-# Pre-cargar todas las pestañas
+# Cargar todas las pestañas en un diccionario
 hojas = {}
 for ws in archivo.worksheets():
     hojas[ws.title] = ws
 
 # ==========================================
-# 🔹 CATEGORIZACIÓN
+# 🔹 FUNCIONES DE ANÁLISIS
 # ==========================================
 
 def extraer_monto_y_moneda(texto):
@@ -70,18 +83,14 @@ def extraer_monto_y_moneda(texto):
         (re.compile(r'([0-9]+(?:[.,][0-9]{1,2})?)\s*€'), "€"),
         (re.compile(r'([0-9]+(?:[.,][0-9]{1,2})?)\s*\$'), "$"),
     ]
-
     for rex, moneda in patrones:
         m = rex.search(t)
         if m:
             return m.group(1).replace(",", "."), moneda
-
     m = re.search(r'\b([0-9]+(?:[.,][0-9]{1,2})?)\b', t)
     if m:
         return m.group(1).replace(",", "."), "€"
-
     return None, None
-
 
 def clasificar_categoria(texto):
     texto = texto.lower()
@@ -94,7 +103,7 @@ def limpiar_descripcion(texto):
     return texto.strip().capitalize()
 
 # ==========================================
-# 🔹 SUBIR FOTO A DRIVE (OPCIONAL)
+# 🔹 SUBIR FOTO A DRIVE
 # ==========================================
 
 def subir_foto_drive(url):
@@ -102,21 +111,16 @@ def subir_foto_drive(url):
         r = requests.get(url)
         if r.status_code != 200:
             return None
-
         os.makedirs("temp", exist_ok=True)
         fname = f"temp/{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         with open(fname, "wb") as f:
             f.write(r.content)
-
         meta = {"name": os.path.basename(fname)}
         media = MediaFileUpload(fname, mimetype="image/jpeg")
         file = drive_service.files().create(body=meta, media_body=media, fields="id").execute()
-
         drive_service.permissions().create(
-            fileId=file["id"],
-            body={"role": "reader", "type": "anyone"}
+            fileId=file["id"], body={"role": "reader", "type": "anyone"}
         ).execute()
-
         link = f"https://drive.google.com/file/d/{file['id']}/view?usp=sharing"
         os.remove(fname)
         return link
@@ -136,29 +140,59 @@ def webhook():
     resp = MessagingResponse()
     r = resp.message()
 
-    # ------------------------------------------
-    # Validar usuario
-    # ------------------------------------------
-    if sender not in USUARIOS:
-        r.body("❌ Usuario no autorizado.")
+    if sender not in ADMINS:
+        r.body("❌ No autorizado.")
         return str(resp)
 
-    # Extraer datos
+    # ==========================================================
+    # 🟦 1️⃣ DETECTAR PREFIJO (IF=, GF=, etc.)
+    # ==========================================================
+    prefijo = None
+    tab_destino = None
+
+    for p in PREFIX_TO_TAB:
+        if msg.upper().startswith(p + "="):
+            prefijo = p
+            tab_destino = PREFIX_TO_TAB[p]
+            msg = msg[len(p)+1:].strip()  # borrar "XX=" del texto
+            break
+
+    if not tab_destino:
+        r.body("❌ Debes usar un prefijo válido: IF= GF= CF= ID= GD= CD= CR=")
+        return str(resp)
+
+    # ==========================================================
+    # 🟩 2️⃣ EXTRAER INFORMACIÓN
+    # ==========================================================
     monto, moneda = extraer_monto_y_moneda(msg)
     categoria = clasificar_categoria(msg)
     descripcion = limpiar_descripcion(msg)
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     link = ""
+
     if num_media > 0:
         link = subir_foto_drive(request.form.get("MediaUrl0"))
 
-    # Registrar en TODAS las pestañas asignadas a ese número
-    for tab in USUARIOS[sender]:
-        if tab in hojas:
-            hojas[tab].append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
+    # ==========================================================
+    # 🟧 3️⃣ REGISTRAR EN LA PESTAÑA CORRECTA
+    # ==========================================================
+    if tab_destino not in hojas:
+        r.body(f"❌ La pestaña '{tab_destino}' no existe en Google Sheets.")
+        return str(resp)
 
-    r.body(f"✅ Registrado en pestañas: {', '.join(USUARIOS[sender])}\n💰 {monto}{moneda}\n🏷️ {categoria}\n💬 {descripcion}")
+    hojas[tab_destino].append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
+
+    # ==========================================================
+    # 🟩 4️⃣ RESPUESTA
+    # ==========================================================
+    r.body(
+        f"✅ *Registrado en {tab_destino}*\n"
+        f"📅 {fecha}\n"
+        f"💰 {monto}{moneda}\n"
+        f"🏷️ {categoria}\n"
+        f"💬 {descripcion}"
+    )
+
     return str(resp)
 
 # ==========================================
