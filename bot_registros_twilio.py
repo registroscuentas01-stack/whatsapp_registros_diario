@@ -36,7 +36,7 @@ PREFIX_TO_TAB = {
     "CR": "CODIGOS_R",
 }
 
-ARCHIVO_IS = "REGISTROS_DIARIOS"
+ARCHIVO_GS = "REGISTROS_DIARIOS"
 
 
 # ==========================================
@@ -66,7 +66,7 @@ client = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
 print("ARCHIVOS VISIBLES:", client.list_spreadsheet_files())
-archivo = client.open(ARCHIVO_IS)
+archivo = client.open(ARCHIVO_GS)
 FGS
 # Cargar todas las pestañas en un diccionario
 hojas = {}
