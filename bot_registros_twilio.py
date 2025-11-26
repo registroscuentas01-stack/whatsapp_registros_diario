@@ -65,6 +65,7 @@ credentials = service_account.Credentials.from_service_account_info(credentials_
 client = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
+print("ARCHIVOS VISIBLES:", client.list_spreadsheet_files())
 archivo = client.open(ARCHIVO_GS)
 
 # Cargar todas las pestañas en un diccionario
