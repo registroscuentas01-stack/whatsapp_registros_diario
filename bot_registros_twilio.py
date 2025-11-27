@@ -1,4 +1,4 @@
-from flask import Flask, request 
+from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import re
 from datetime import datetime
@@ -32,28 +32,30 @@ PREFIX_TO_TAB = {
     "CF": "CREDITOS_F",
     "ID": "INGRESOS_D",
     "GD": "GASTOS_D",
-    "CD": "GASTOS_D",       # ← CORREGIDO
+    "CD": "CREDITOS_D",
     "CR": "CODIGOS_R",
 }
-
-ARCHIVO_GS = "REGISTROS_DIARIOS"
 
 # ==========================================
 # 🔹 GOOGLE SHEETS
 # ==========================================
+
+# ID real de tu hoja (el que está en tu URL)
+ARCHIVO_GS_ID = "1v-CK37p7ngUVNk3iX6XiCM8Ef8wXMrXZJ_2RLHqt2n_A"
 
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-pk = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
+# Corregir saltos de línea de la llave privada
+private_key = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
 
 credentials_dict = {
     "type": os.getenv("GOOGLE_TYPE"),
     "project_id": os.getenv("GOOGLE_PROJECT_ID"),
     "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-    "private_key": pk,
+    "private_key": private_key,
     "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
     "client_id": os.getenv("GOOGLE_CLIENT_ID"),
     "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
@@ -66,11 +68,8 @@ credentials = service_account.Credentials.from_service_account_info(credentials_
 client = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
-# DEBUG: Ver archivos accesibles
-print("ARCHIVOS VISIBLES:", client.list_spreadsheet_files())
-
-# Abrir archivo de Google Sheets
-archivo = client.open(ARCHIVO_GS)
+# Abrir por ID (NO por nombre)
+archivo = client.open_by_key(ARCHIVO_GS_ID)
 
 # Cargar todas las pestañas
 hojas = {ws.title: ws for ws in archivo.worksheets()}
@@ -148,10 +147,8 @@ def webhook():
         r.body("❌ No autorizado.")
         return str(resp)
 
-    # 1️⃣ Detectar prefijo
     prefijo = None
     tab_destino = None
-
     for p in PREFIX_TO_TAB:
         if msg.upper().startswith(p + "="):
             prefijo = p
@@ -160,10 +157,9 @@ def webhook():
             break
 
     if not tab_destino:
-        r.body("❌ Debes usar un prefijo válido: IF= GF= CF= ID= GD= CD= CR=")
+        r.body("❌ Prefijo inválido. Usa: IF= GF= CF= ID= GD= CD= CR=")
         return str(resp)
 
-    # 2️⃣ Extraer información
     monto, moneda = extraer_monto_y_moneda(msg)
     categoria = clasificar_categoria(msg)
     descripcion = limpiar_descripcion(msg)
@@ -173,14 +169,12 @@ def webhook():
     if num_media > 0:
         link = subir_foto_drive(request.form.get("MediaUrl0"))
 
-    # 3️⃣ Registrar en la pestaña correcta
     if tab_destino not in hojas:
-        r.body(f"❌ La pestaña '{tab_destino}' no existe.")
+        r.body(f"❌ La pestaña '{tab_destino}' no existe en la hoja.")
         return str(resp)
 
     hojas[tab_destino].append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
 
-    # 4️⃣ Respuesta al usuario
     r.body(
         f"✅ *Registrado en {tab_destino}*\n"
         f"📅 {fecha}\n"
