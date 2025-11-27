@@ -1,51 +1,30 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-import re
-from datetime import datetime
+import os
 import gspread
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-import os
-import requests
 
 app = Flask(__name__)
 
 # ==========================================
-# ⚙️ ADMINS
+# 🔹 ADMINS AUTORIZADOS
 # ==========================================
-
 ADMINS = [
     "+593991769796",
     "+593989921225",
     "+447594501771",
     "+593989777246",
-    "+593990516017"  # ← NUEVO ADMIN AÑADIDO
+    "+593990516017",   # Nuevo número agregado
 ]
-# ==========================================
-# ⚙️ PREFIJOS SIN "="
-# ==========================================
-
-PREFIX_TO_TAB = {
-    "IF": "INGRESOS_F",
-    "GF": "GASTOS_F",
-    "CF": "CREDITOS_F",
-    "ID": "INGRESOS_D",
-    "GD": "GASTOS_D",
-    "CD": "CREDITOS_D",
-    "CR": "CODIGOS_R",
-}
 
 # ==========================================
-# 🔹 ID GOOGLE SHEET
+# 🔹 ID de la hoja
 # ==========================================
-
 ARCHIVO_GS_ID = "1v-CK37p7ngUVNk3iX6XiCM8EfwXMrXZJ_2RLHqt2n_A"
 
 # ==========================================
-# 🔹 GOOGLE API
+# 🔹 Google Sheets
 # ==========================================
-
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -69,122 +48,232 @@ credentials = service_account.Credentials.from_service_account_info(
 )
 
 client = gspread.authorize(credentials)
-drive_service = build("drive", "v3", credentials=credentials)
-
 archivo = client.open_by_key(ARCHIVO_GS_ID)
 
-hojas = {ws.title: ws for ws in archivo.worksheets()}
+hojas = {}
+for ws in archivo.worksheets():
+    hojas[ws.title] = ws
+
 
 # ==========================================
-# 🔹 UTILIDADES
+# 🔹 FORMATOS
 # ==========================================
 
-def extraer_monto_y_moneda(texto):
-    t = texto.lower()
-    patrones = [
-        (re.compile(r'(?:€)\s*([0-9]+(?:[.,][0-9]{1,2})?)'), "€"),
-        (re.compile(r'(?:\$)\s*([0-9]+(?:[.,][0-9]{1,2})?)'), "$"),
-        (re.compile(r'([0-9]+(?:[.,][0-9]{1,2})?)\s*€'), "€"),
-        (re.compile(r'([0-9]+(?:[.,][0-9]{1,2})?)\s*\$'), "$"),
-    ]
-    for rex, moneda in patrones:
-        m = rex.search(t)
-        if m:
-            return m.group(1).replace(",", "."), moneda
-    m = re.search(r"\b([0-9]+(?:[.,][0-9]{1,2})?)\b", t)
-    if m:
-        return m.group(1).replace(",", "."), "€"
-    return None, None
+FORMATO_V = (
+    "CLIENTE:\n"
+    "BANCO:\n"
+    "NOMBRE:\n"
+    "VALOR:\n"
+    "USUARIO:\n"
+    "ID:\n"
+)
 
-def clasificar_categoria(texto):
-    t = texto.lower()
-    if "super" in t: return "Supermercado"
-    if "gasolina" in t: return "Combustible"
-    if "comida" in t or "rest" in t: return "Alimentación"
-    return "Gastos varios"
+FORMATO_G = (
+    "CATEGORIA:\n"
+    "DESCRIPCION:\n"
+    "VALOR:\n"
+    "MONEDA:\n"
+    "ID:\n"
+)
 
-def limpiar_descripcion(texto):
-    return texto.strip().capitalize()
+FORMATO_C = (
+    "CREDITOS:\n"
+    "ID:\n"
+)
 
-def subir_foto_drive(url):
-    try:
-        r = requests.get(url)
-        if r.status_code != 200:
-            return None
-        os.makedirs("temp", exist_ok=True)
-        fname = f"temp/{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        with open(fname, "wb") as f:
-            f.write(r.content)
-        meta = {"name": os.path.basename(fname)}
-        media = MediaFileUpload(fname, mimetype="image/jpeg")
-        file = drive_service.files().create(
-            body=meta, media_body=media, fields="id"
-        ).execute()
-        drive_service.permissions().create(
-            fileId=file["id"],
-            body={"role": "reader", "type": "anyone"}
-        ).execute()
-        os.remove(fname)
-        return f"https://drive.google.com/file/d/{file['id']}/view?usp=sharing"
-    except:
-        return None
+FORMATO_BANCOS = {
+    "PICHINCHA": (
+        "BANCO: Pichincha\n"
+        "TELEFONO:\n"
+        "CODIGO:\n"
+        "CEDULA:\n"
+        "MONTO:\n"
+        "USUARIO:\n"
+        "RETIRAR HASTA:\n"
+        "ID:\n"
+    ),
+    "GUAYAQUIL": (
+        "BANCO: Guayaquil\n"
+        "TELEFONO:\n"
+        "CLAVE RETIRO:\n"
+        "CLAVE ENVIO:\n"
+        "MONTO:\n"
+        "USUARIO:\n"
+        "RETIRAR HASTA:\n"
+        "ID:\n"
+    ),
+    "PACIFICO": (
+        "BANCO: Pacifico\n"
+        "TELEFONO:\n"
+        "CODIGO:\n"
+        "CEDULA:\n"
+        "MONTO:\n"
+        "USUARIO:\n"
+        "RETIRAR HASTA:\n"
+        "ID:\n"
+    ),
+    "PRODUBANCO": (
+        "BANCO: Produbanco\n"
+        "TELEFONO:\n"
+        "CODIGO:\n"
+        "CEDULA:\n"
+        "MONTO:\n"
+        "USUARIO:\n"
+        "RETIRAR HASTA:\n"
+        "ID:\n"
+    ),
+}
+
+# ==========================================
+# 🔹 CAMPOS OBLIGATORIOS
+# ==========================================
+
+OBLIGATORIOS = {
+    "V": ["CLIENTE", "BANCO", "NOMBRE", "VALOR", "USUARIO", "ID"],
+    "G": ["CATEGORIA", "DESCRIPCION", "VALOR", "MONEDA", "ID"],
+    "C": ["CREDITOS", "ID"],
+    "CO_PICHINCHA": ["TELEFONO", "CODIGO", "CEDULA", "MONTO", "USUARIO", "RETIRAR HASTA", "ID"],
+    "CO_PRODUBANCO": ["TELEFONO", "CODIGO", "CEDULA", "MONTO", "USUARIO", "RETIRAR HASTA", "ID"],
+    "CO_PACIFICO": ["TELEFONO", "CODIGO", "CEDULA", "MONTO", "USUARIO", "RETIRAR HASTA", "ID"],
+    "CO_GUAYAQUIL": ["TELEFONO", "CLAVE RETIRO", "CLAVE ENVIO", "MONTO", "USUARIO", "RETIRAR HASTA", "ID"],
+}
+
+# Estados
+ESTADO = {}
+ESPERANDO_BANCO = {}
+
+
+# ==========================================
+# 🔹 PARSEADOR
+# ==========================================
+def parse_formato(texto):
+    data = {}
+    for linea in texto.split("\n"):
+        if ":" in linea:
+            campo, valor = linea.split(":", 1)
+            data[campo.strip().upper()] = valor.strip()
+    return data
+
+
+# ==========================================
+# 🔹 DETECTAR HOJA SEGÚN ID
+# ==========================================
+def obtener_hoja(tipo, id_letra):
+
+    id_letra = id_letra.upper()
+
+    MAP = {
+        ("V", "F"): "INGRESOS_F",
+        ("V", "D"): "INGRESOS_D",
+        ("G", "F"): "GASTOS_F",
+        ("G", "D"): "GASTOS_D",
+        ("C", "F"): "CREDITOS_F",
+        ("C", "D"): "CREDITOS_D",
+        ("CO", "F"): "CODIGOS_F",
+        ("CO", "D"): "CODIGOS_D",
+    }
+
+    return MAP.get((tipo, id_letra), None)
+
 
 # ==========================================
 # 🔹 WEBHOOK
 # ==========================================
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
     msg = request.form.get("Body", "").strip()
     sender = request.form.get("From", "").replace("whatsapp:", "")
-    num_media = int(request.form.get("NumMedia", 0))
+    msg_upper = msg.upper()
 
     resp = MessagingResponse()
     r = resp.message()
 
+    # Validación de admin
     if sender not in ADMINS:
         r.body("❌ No autorizado.")
         return str(resp)
 
-    partes = msg.split(" ", 1)
-    prefijo = partes[0].upper()
+    # ==========================================
+    # 1️⃣ Solicitud de formato
+    # ==========================================
+    if msg_upper in ["V", "G", "C", "CO"]:
+        ESTADO[sender] = msg_upper
 
-    if prefijo not in PREFIX_TO_TAB:
-        r.body("❌ Prefijo inválido. Usa: IF GF CF ID GD CD CR")
+        if msg_upper == "V":
+            r.body(FORMATO_V)
+        elif msg_upper == "G":
+            r.body(FORMATO_G)
+        elif msg_upper == "C":
+            r.body(FORMATO_C)
+        elif msg_upper == "CO":
+            ESPERANDO_BANCO[sender] = True
+            r.body("¿De qué banco necesitas el formato? (Pichincha / Guayaquil / Pacifico / Produbanco)")
         return str(resp)
 
-    tab_destino = PREFIX_TO_TAB[prefijo]
+    # ==========================================
+    # 2️⃣ Usuario selecciona banco
+    # ==========================================
+    if sender in ESPERANDO_BANCO:
+        banco = msg_upper
+        if banco in FORMATO_BANCOS:
+            ESTADO[sender] = "CO_" + banco    # ejemplo: CO_PICHINCHA
+            ESPERANDO_BANCO.pop(sender)
+            r.body(FORMATO_BANCOS[banco])
+            return str(resp)
+        else:
+            r.body("❌ Banco no válido. Usa: Pichincha, Guayaquil, Pacifico, Produbanco.")
+            return str(resp)
 
-    if len(partes) == 1:
-        r.body("❌ Debes añadir un texto después del prefijo.")
+    # ==========================================
+    # 3️⃣ Procesar formulario lleno
+    # ==========================================
+    if sender in ESTADO:
+        tipo_formulario = ESTADO[sender]  # V / G / C / CO_PICHINCHA / ...
+        data = parse_formato(msg)
+
+        # Validar ID
+        if "ID" not in data or data["ID"] == "":
+            r.body("❌ Falta el campo obligatorio ID.")
+            return str(resp)
+
+        # Validar campos obligatorios
+        obligatorios = OBLIGATORIOS.get(tipo_formulario, [])
+        faltantes = [campo for campo in obligatorios if campo not in data or data[campo] == ""]
+
+        if faltantes:
+            lista = "\n".join(f"• {c}" for c in faltantes)
+            r.body(f"❌ Faltan campos obligatorios:\n{lista}")
+            return str(resp)
+
+        # Determinar hoja
+        tipo_base = tipo_formulario.split("_")[0]  # CO_PICHINCHA → CO
+        hoja_nombre = obtener_hoja(tipo_base, data["ID"])
+
+        if hoja_nombre not in hojas:
+            r.body(f"❌ Hoja destino no encontrada: {hoja_nombre}")
+            return str(resp)
+
+        ws = hojas[hoja_nombre]
+
+        # Registrar fila
+        fila = [f"{k}: {v}" for k, v in data.items()]
+        ws.append_row(fila)
+
+        ESTADO.pop(sender, None)
+
+        r.body(f"✅ Registro exitoso en *{hoja_nombre}*")
         return str(resp)
 
-    msg = partes[1].strip()
-
-    monto, moneda = extraer_monto_y_moneda(msg)
-    categoria = clasificar_categoria(msg)
-    descripcion = limpiar_descripcion(msg)
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    link = ""
-    if num_media > 0:
-        link = subir_foto_drive(request.form.get("MediaUrl0"))
-
-    hojas[tab_destino].append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
-
-    r.body(
-        f"✅ *Registrado en {tab_destino}*\n"
-        f"📅 {fecha}\n"
-        f"💰 {monto}{moneda}\n"
-        f"🏷️ {categoria}\n"
-        f"💬 {descripcion}"
-    )
-
+    # ==========================================
+    # 4️⃣ No entendido
+    # ==========================================
+    r.body("❌ No entendí tu mensaje.\nEscribe: V, G, C o CO.")
     return str(resp)
 
-# ==========================================
-# 🔹 APP RUN
-# ==========================================
 
+# ==========================================
+# RUN
+# ==========================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
