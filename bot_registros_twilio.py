@@ -26,7 +26,7 @@ ADMINS = [
 # ⚙️ MAPA DE PREFIJOS -> PESTAÑAS
 # ==========================================
 
-PREFIX_TO_TAB {
+PREFIX_TO_TAB = {
     "IF": "INGRESOS_F",
     "GF": "GASTOS_F",
     "CF": "CREDITOS_F",
@@ -174,18 +174,25 @@ def webhook():
         r.body("❌ No autorizado.")
         return str(resp)
 
-    # Prefijo
-    tab_destino = None
+   # ===============================
+#   PREFIJOS SIN "="
+# ===============================
+tab_destino = None
 
-    for p in PREFIX_TO_TAB:
-        if msg.upper().startswith(p + "="):
-            tab_destino = PREFIX_TO_TAB[p]
-            msg = msg[len(p)+1:].strip()
-            break
+partes = msg.split(" ", 1)  # Divide PREFIJO + TEXTO
+prefijo = partes[0].upper()  # IF, GF, etc.
 
-    if not tab_destino:
-        r.body("❌ Usa un prefijo válido: IF= GF= CF= ID= GD= CD= CR=")
+if prefijo in PREFIX_TO_TAB:
+    tab_destino = PREFIX_TO_TAB[prefijo]
+
+    if len(partes) == 1:
+        r.body("❌ Debes escribir un valor después del prefijo.")
         return str(resp)
+
+    msg = partes[1].strip()  # Resto del mensaje sin IF
+else:
+    r.body("❌ Usa un prefijo válido: IF GF CF ID GD CD CR")
+    return str(resp)
 
     monto, moneda = extraer_monto_y_moneda(msg)
     categoria = clasificar_categoria(msg)
