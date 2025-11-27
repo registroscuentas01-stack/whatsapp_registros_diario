@@ -23,7 +23,7 @@ ADMINS = [
 ]
 
 # ==========================================
-# ⚙️ MAPA DE PREFIJOS -> PESTAÑAS DE GOOGLE SHEETS
+# ⚙️ MAPA DE PREFIJOS -> PESTAÑAS
 # ==========================================
 
 PREFIX_TO_TAB = {
@@ -37,25 +37,25 @@ PREFIX_TO_TAB = {
 }
 
 # ==========================================
-# 🔹 GOOGLE SHEETS
+# 🔹 ID DE LA HOJA (CORRECTO)
 # ==========================================
 
-# ID real de tu hoja (el que está en tu URL)
-ARCHIVO_GS_ID = "1v-CK37p7ngUVNk3iX6XiCM8Ef8wXMrXZJ_2RLHqt2n_A"
+ARCHIVO_GS_ID = "1v-CK37p7ngUVNk3iX6XiCM8EfwXMrXZJ_2RLHqt2n_A"
+
+# ==========================================
+# 🔹 GOOGLE SHEETS
+# ==========================================
 
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Corregir saltos de línea de la llave privada
-private_key = os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n")
-
 credentials_dict = {
     "type": os.getenv("GOOGLE_TYPE"),
     "project_id": os.getenv("GOOGLE_PROJECT_ID"),
     "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-    "private_key": private_key,
+    "private_key": os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n"),
     "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
     "client_id": os.getenv("GOOGLE_CLIENT_ID"),
     "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
@@ -64,15 +64,28 @@ credentials_dict = {
     "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
 }
 
-credentials = service_account.Credentials.from_service_account_info(credentials_dict, scopes=scope)
+credentials = service_account.Credentials.from_service_account_info(
+    credentials_dict, scopes=scope
+)
+
 client = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
-# Abrir por ID (NO por nombre)
-archivo = client.open_by_key(ARCHIVO_GS_ID)
+print("🔍 Verificando acceso del bot...")
+
+try:
+    archivo = client.open_by_key(ARCHIVO_GS_ID)
+    print("✅ Google Sheets encontrado y abierto correctamente.")
+except Exception as e:
+    print("❌ ERROR: No se pudo abrir la hoja.")
+    print(e)
+    raise e
 
 # Cargar todas las pestañas
-hojas = {ws.title: ws for ws in archivo.worksheets()}
+hojas = {}
+for ws in archivo.worksheets():
+    hojas[ws.title] = ws
+
 
 # ==========================================
 # 🔹 FUNCIONES DE ANÁLISIS
@@ -98,15 +111,16 @@ def extraer_monto_y_moneda(texto):
 def clasificar_categoria(texto):
     texto = texto.lower()
     if "super" in texto: return "Supermercado"
-    if "gasolina" in texto or "combustible" in texto: return "Combustible"
-    if "rest" in texto or "comida" in texto or "almuerzo" in texto: return "Alimentación"
+    if "gasolina" in texto: return "Combustible"
+    if "comida" in texto or "rest" in texto: return "Alimentación"
     return "Gastos varios"
 
 def limpiar_descripcion(texto):
     return texto.strip().capitalize()
 
+
 # ==========================================
-# 🔹 SUBIR FOTO A DRIVE
+# 🔹 SUBIR FOTO A GOOGLE DRIVE
 # ==========================================
 
 def subir_foto_drive(url):
@@ -114,21 +128,33 @@ def subir_foto_drive(url):
         r = requests.get(url)
         if r.status_code != 200:
             return None
+
         os.makedirs("temp", exist_ok=True)
         fname = f"temp/{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+
         with open(fname, "wb") as f:
             f.write(r.content)
+
         meta = {"name": os.path.basename(fname)}
         media = MediaFileUpload(fname, mimetype="image/jpeg")
-        file = drive_service.files().create(body=meta, media_body=media, fields="id").execute()
-        drive_service.permissions().create(
-            fileId=file["id"], body={"role": "reader", "type": "anyone"}
+
+        file = drive_service.files().create(
+            body=meta, media_body=media, fields="id"
         ).execute()
-        link = f"https://drive.google.com/file/d/{file['id']}/view?usp=sharing"
+
+        drive_service.permissions().create(
+            fileId=file["id"],
+            body={"role": "reader", "type": "anyone"},
+        ).execute()
+
         os.remove(fname)
-        return link
-    except:
+
+        return f"https://drive.google.com/file/d/{file['id']}/view?usp=sharing"
+
+    except Exception as e:
+        print("Error subiendo imagen:", e)
         return None
+
 
 # ==========================================
 # 🔹 WEBHOOK PRINCIPAL
@@ -143,21 +169,22 @@ def webhook():
     resp = MessagingResponse()
     r = resp.message()
 
+    # Validación admin
     if sender not in ADMINS:
         r.body("❌ No autorizado.")
         return str(resp)
 
-    prefijo = None
+    # Prefijo
     tab_destino = None
+
     for p in PREFIX_TO_TAB:
         if msg.upper().startswith(p + "="):
-            prefijo = p
             tab_destino = PREFIX_TO_TAB[p]
             msg = msg[len(p)+1:].strip()
             break
 
     if not tab_destino:
-        r.body("❌ Prefijo inválido. Usa: IF= GF= CF= ID= GD= CD= CR=")
+        r.body("❌ Usa un prefijo válido: IF= GF= CF= ID= GD= CD= CR=")
         return str(resp)
 
     monto, moneda = extraer_monto_y_moneda(msg)
@@ -170,10 +197,12 @@ def webhook():
         link = subir_foto_drive(request.form.get("MediaUrl0"))
 
     if tab_destino not in hojas:
-        r.body(f"❌ La pestaña '{tab_destino}' no existe en la hoja.")
+        r.body(f"❌ La pestaña '{tab_destino}' NO existe.")
         return str(resp)
 
-    hojas[tab_destino].append_row([fecha, sender, categoria, descripcion, monto, moneda, link])
+    hojas[tab_destino].append_row(
+        [fecha, sender, categoria, descripcion, monto, moneda, link]
+    )
 
     r.body(
         f"✅ *Registrado en {tab_destino}*\n"
@@ -184,6 +213,7 @@ def webhook():
     )
 
     return str(resp)
+
 
 # ==========================================
 # 🔹 INICIO
