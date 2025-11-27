@@ -3,6 +3,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 import os
 import gspread
 from google.oauth2 import service_account
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -14,7 +15,7 @@ ADMINS = [
     "+593989921225",
     "+447594501771",
     "+593989777246",
-    "+593990516017",   # Nuevo número agregado
+    "+593990516017",
 ]
 
 # ==========================================
@@ -50,10 +51,7 @@ credentials = service_account.Credentials.from_service_account_info(
 client = gspread.authorize(credentials)
 archivo = client.open_by_key(ARCHIVO_GS_ID)
 
-hojas = {}
-for ws in archivo.worksheets():
-    hojas[ws.title] = ws
-
+hojas = {ws.title: ws for ws in archivo.worksheets()}
 
 # ==========================================
 # 🔹 FORMATOS
@@ -127,7 +125,6 @@ FORMATO_BANCOS = {
 # ==========================================
 # 🔹 CAMPOS OBLIGATORIOS
 # ==========================================
-
 OBLIGATORIOS = {
     "V": ["CLIENTE", "BANCO", "NOMBRE", "VALOR", "USUARIO", "ID"],
     "G": ["CATEGORIA", "DESCRIPCION", "VALOR", "MONEDA", "ID"],
@@ -138,10 +135,8 @@ OBLIGATORIOS = {
     "CO_GUAYAQUIL": ["TELEFONO", "CLAVE RETIRO", "CLAVE ENVIO", "MONTO", "USUARIO", "RETIRAR HASTA", "ID"],
 }
 
-# Estados
 ESTADO = {}
 ESPERANDO_BANCO = {}
-
 
 # ==========================================
 # 🔹 PARSEADOR
@@ -154,14 +149,11 @@ def parse_formato(texto):
             data[campo.strip().upper()] = valor.strip()
     return data
 
-
 # ==========================================
-# 🔹 DETECTAR HOJA SEGÚN ID
+# 🔹 MAPEO HOJAS
 # ==========================================
 def obtener_hoja(tipo, id_letra):
-
     id_letra = id_letra.upper()
-
     MAP = {
         ("V", "F"): "INGRESOS_F",
         ("V", "D"): "INGRESOS_D",
@@ -172,9 +164,7 @@ def obtener_hoja(tipo, id_letra):
         ("CO", "F"): "CODIGOS_F",
         ("CO", "D"): "CODIGOS_D",
     }
-
     return MAP.get((tipo, id_letra), None)
-
 
 # ==========================================
 # 🔹 WEBHOOK
@@ -189,14 +179,14 @@ def webhook():
     resp = MessagingResponse()
     r = resp.message()
 
-    # Validación de admin
+    # Validación
     if sender not in ADMINS:
         r.body("❌ No autorizado.")
         return str(resp)
 
-    # ==========================================
-    # 1️⃣ Solicitud de formato
-    # ==========================================
+    # ============================
+    # 1️⃣ Solicitud de formatos
+    # ============================
     if msg_upper in ["V", "G", "C", "CO"]:
         ESTADO[sender] = msg_upper
 
@@ -211,63 +201,73 @@ def webhook():
             r.body("¿De qué banco necesitas el formato? (Pichincha / Guayaquil / Pacifico / Produbanco)")
         return str(resp)
 
-    # ==========================================
-    # 2️⃣ Usuario selecciona banco
-    # ==========================================
+    # ============================
+    # 2️⃣ Elección de banco
+    # ============================
     if sender in ESPERANDO_BANCO:
         banco = msg_upper
         if banco in FORMATO_BANCOS:
-            ESTADO[sender] = "CO_" + banco    # ejemplo: CO_PICHINCHA
+            ESTADO[sender] = "CO_" + banco
             ESPERANDO_BANCO.pop(sender)
             r.body(FORMATO_BANCOS[banco])
             return str(resp)
         else:
-            r.body("❌ Banco no válido. Usa: Pichincha, Guayaquil, Pacifico, Produbanco.")
+            r.body("❌ Banco no válido.")
             return str(resp)
 
-    # ==========================================
-    # 3️⃣ Procesar formulario lleno
-    # ==========================================
+    # ============================
+    # 3️⃣ Procesar formato lleno
+    # ============================
     if sender in ESTADO:
-        tipo_formulario = ESTADO[sender]  # V / G / C / CO_PICHINCHA / ...
+
+        tipo_formulario = ESTADO[sender]
         data = parse_formato(msg)
 
         # Validar ID
         if "ID" not in data or data["ID"] == "":
-            r.body("❌ Falta el campo obligatorio ID.")
+            r.body("❌ Falta el campo obligatorio: ID")
             return str(resp)
 
         # Validar campos obligatorios
         obligatorios = OBLIGATORIOS.get(tipo_formulario, [])
-        faltantes = [campo for campo in obligatorios if campo not in data or data[campo] == ""]
+        faltantes = [c for c in obligatorios if c not in data or data[c] == ""]
 
         if faltantes:
-            lista = "\n".join(f"• {c}" for c in faltantes)
-            r.body(f"❌ Faltan campos obligatorios:\n{lista}")
+            r.body("❌ Faltan campos obligatorios:\n" + "\n".join(f"• {c}" for c in faltantes))
             return str(resp)
 
         # Determinar hoja
-        tipo_base = tipo_formulario.split("_")[0]  # CO_PICHINCHA → CO
+        tipo_base = tipo_formulario.split("_")[0]
         hoja_nombre = obtener_hoja(tipo_base, data["ID"])
 
         if hoja_nombre not in hojas:
-            r.body(f"❌ Hoja destino no encontrada: {hoja_nombre}")
+            r.body(f"❌ No existe la hoja destino: {hoja_nombre}")
             return str(resp)
 
         ws = hojas[hoja_nombre]
 
-        # Registrar fila
-        fila = [f"{k}: {v}" for k, v in data.items()]
-        ws.append_row(fila)
+        # ============================
+        # 🔥 REGISTRO CORREGIDO
+        # ============================
+        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        vendedor = sender
+
+        # Solo valores (sin títulos)
+        valores = [data[campo] for campo in data]
+
+        # Fila final
+        fila_final = [fecha, vendedor] + valores
+
+        ws.append_row(fila_final)
 
         ESTADO.pop(sender, None)
 
         r.body(f"✅ Registro exitoso en *{hoja_nombre}*")
         return str(resp)
 
-    # ==========================================
-    # 4️⃣ No entendido
-    # ==========================================
+    # ============================
+    # 4️⃣ Ningún caso coincide
+    # ============================
     r.body("❌ No entendí tu mensaje.\nEscribe: V, G, C o CO.")
     return str(resp)
 
